@@ -1,13 +1,13 @@
 import type { Refs, SymbolMeta } from '@hey-api/codegen-core';
 import { fromRef } from '@hey-api/codegen-core';
-import type { IR, SchemaExtractor, SchemaResult, SchemaVisitor } from '@hey-api/shared';
+import type { SchemaExtractor, SchemaVisitor } from '@hey-api/shared';
 import { pathToJsonPointer } from '@hey-api/shared';
 
 import { $ } from '../../../ts-dsl';
 import { maybeBigInt, shouldCoerceToBigInt } from '../../shared/utils/coerce';
 import { pipesToNode } from '../shared/pipes';
 import type { ProcessorContext } from '../shared/processor';
-import type { Ast, PluginState } from '../shared/types';
+import type { PluginState, ValibotAppliedResult, ValibotSchemaResult } from '../shared/types';
 import type { ValibotPlugin } from '../types';
 import { identifiers } from './constants';
 import { arrayToAst } from './toAst/array';
@@ -30,16 +30,16 @@ export interface VisitorConfig {
   state: Refs<PluginState>;
 }
 
-function getDefaultValue(result: SchemaResult<Ast>) {
+function getDefaultValue(result: ValibotSchemaResult) {
   return result.format ? maybeBigInt(result.default, result.format) : $.fromValue(result.default);
 }
 
 export function createVisitor(
   config: VisitorConfig,
-): SchemaVisitor<Ast, ValibotPlugin['Instance']> {
+): SchemaVisitor<ValibotSchemaResult, ValibotPlugin['Instance']> {
   const { schemaExtractor, state } = config;
   return {
-    applyModifiers(result, ctx, options = {}) {
+    applyModifiers(result, ctx, options = {}): ValibotAppliedResult {
       const { optional } = options;
       const v = ctx.plugin.external('valibot.v');
       const pipes = [...result.expression.pipes];
@@ -82,8 +82,8 @@ export function createVisitor(
       return { pipes };
     },
     array(schema, ctx, walk) {
-      const applyModifiers = (result: SchemaResult<Ast>, opts: { optional?: boolean }) =>
-        this.applyModifiers(result, ctx, opts);
+      const applyModifiers = (result: ValibotSchemaResult, opts: { optional?: boolean }) =>
+        this.applyModifiers(result, ctx, opts) as ValibotAppliedResult;
       const ast = arrayToAst({
         ...ctx,
         applyModifiers,
@@ -92,18 +92,20 @@ export function createVisitor(
         walk,
       });
       return {
+        default: schema.default,
         expression: ast,
         hasLazyExpression: state.hasLazyExpression['~ref'],
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     boolean(schema, ctx) {
       const pipe = booleanToAst({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     enum(schema, ctx) {
@@ -111,18 +113,20 @@ export function createVisitor(
       const hasNull =
         schema.items?.some((item) => item.type === 'null' || item.const === null) ?? false;
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: hasNull,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     integer(schema, ctx) {
       const pipe = numberToNode({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         format: schema.format,
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     intercept(schema, ctx, walk) {
@@ -142,12 +146,13 @@ export function createVisitor(
         }
       }
     },
-    intersection(items, schemas, ctx) {
+    intersection(items, schemas, parentSchema, ctx) {
       const v = ctx.plugin.external('valibot.v');
       const hasAnyLazy = items.some((item) => item.hasLazyExpression);
       const itemNodes = items.map((item) => pipesToNode(item.expression.pipes, ctx.plugin));
 
       return {
+        default: parentSchema.default,
         expression: {
           pipes: [
             $(v)
@@ -163,6 +168,7 @@ export function createVisitor(
     never(schema, ctx) {
       const pipe = neverToAst({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
         readonly: false,
@@ -171,6 +177,7 @@ export function createVisitor(
     null(schema, ctx) {
       const pipe = nullToAst({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
         readonly: false,
@@ -179,15 +186,16 @@ export function createVisitor(
     number(schema, ctx) {
       const pipe = numberToNode({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         format: schema.format,
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     object(schema, ctx, walk) {
-      const applyModifiers = (result: SchemaResult<Ast>, opts: { optional?: boolean }) =>
-        this.applyModifiers(result, ctx, opts);
+      const applyModifiers = (result: ValibotSchemaResult, opts: { optional?: boolean }) =>
+        this.applyModifiers(result, ctx, opts) as ValibotAppliedResult;
       const ast = objectToAst({
         applyModifiers,
         plugin: ctx.plugin,
@@ -197,10 +205,11 @@ export function createVisitor(
         walkerCtx: ctx,
       });
       return {
+        default: schema.default,
         expression: ast,
-        hasLazyExpression: ast.hasLazyExpression ?? false,
+        hasLazyExpression: state.hasLazyExpression['~ref'],
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     postProcess(result, schema, ctx) {
@@ -229,14 +238,16 @@ export function createVisitor(
 
       if (ctx.plugin.isSymbolRegistered(query)) {
         return {
+          default: schema.default,
           expression: { pipes: [$(refSymbol)] },
           nullable: false,
-          readonly: false,
+          readonly: schema.accessScope === 'read',
         };
       }
 
       state.hasLazyExpression['~ref'] = true;
       return {
+        default: schema.default,
         expression: {
           pipes: [
             $(v)
@@ -246,7 +257,7 @@ export function createVisitor(
         },
         hasLazyExpression: true,
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     string(schema, ctx) {
@@ -256,22 +267,24 @@ export function createVisitor(
           schema: { ...schema, type: 'number' },
         });
         return {
+          default: schema.default,
           expression: { pipes: [pipe] },
           nullable: false,
-          readonly: false,
+          readonly: schema.accessScope === 'read',
         };
       }
 
       const pipe = stringToNode({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     tuple(schema, ctx, walk) {
-      const applyModifiers = (result: SchemaResult<Ast>, opts: { optional?: boolean }) =>
-        this.applyModifiers(result, ctx, opts);
+      const applyModifiers = (result: ValibotSchemaResult, opts: { optional?: boolean }) =>
+        this.applyModifiers(result, ctx, opts) as ValibotAppliedResult;
       const ast = tupleToAst({
         ...ctx,
         applyModifiers,
@@ -280,47 +293,43 @@ export function createVisitor(
         walk,
       });
       return {
+        default: schema.default,
         expression: ast,
         hasLazyExpression: state.hasLazyExpression['~ref'],
         nullable: false,
-        readonly: false,
+        readonly: schema.accessScope === 'read',
       };
     },
     undefined(schema, ctx) {
       const pipe = undefinedToAst({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
         readonly: false,
       };
     },
-    union(items, schemas, ctx) {
+    union(items, schemas, parentSchema, ctx) {
       const v = ctx.plugin.external('valibot.v');
       const hasAnyLazy = items.some((item) => item.hasLazyExpression);
 
       const hasNull = schemas.some((s) => s.type === 'null') || items.some((i) => i.nullable);
 
       const nonNullItems: typeof items = [];
-      const nonNullSchemas: Array<IR.SchemaObject> = [];
 
       items.forEach((item, index) => {
         const schema = schemas[index]!;
         if (schema.type !== 'null') {
           nonNullItems.push(item);
-          nonNullSchemas.push(schema);
         }
       });
 
-      // Build union expression WITHOUT null - null is tracked via nullable flag
-      let expression: Ast;
+      let expression: ValibotSchemaResult['expression'];
       if (nonNullItems.length === 0) {
-        // Union was only null
         expression = { pipes: [$(v).attr(identifiers.schemas.null).call()] };
       } else if (nonNullItems.length === 1) {
-        // Single non-null item
         expression = nonNullItems[0]!.expression;
       } else {
-        // Multiple non-null items
         const itemNodes = nonNullItems.map((i) => pipesToNode(i.expression.pipes, ctx.plugin));
         expression = {
           pipes: [
@@ -332,15 +341,17 @@ export function createVisitor(
       }
 
       return {
+        default: parentSchema.default,
         expression,
         hasLazyExpression: hasAnyLazy,
         nullable: hasNull,
-        readonly: false,
+        readonly: items.some((i) => i.readonly),
       };
     },
     unknown(schema, ctx) {
       const pipe = unknownToAst({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
         readonly: false,
@@ -349,6 +360,7 @@ export function createVisitor(
     void(schema, ctx) {
       const pipe = voidToAst({ ...ctx, schema });
       return {
+        default: schema.default,
         expression: { pipes: [pipe] },
         nullable: false,
         readonly: false,
